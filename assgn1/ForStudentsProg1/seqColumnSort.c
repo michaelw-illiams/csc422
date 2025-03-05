@@ -200,7 +200,6 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
                 // Steps 1, 3, 5, and 7 are all the same: sort each column individually
                 printf("Step %d: Sort the Columns\n", step); //r
                 columnSortInd(matrix, length, width);
-                printMatrix(matrix, length, width);
                 break;
 
             case 2:
@@ -238,6 +237,7 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
                 break;
         }
     }
+
     // write final matrix back to 1d array
     int index = 0;
     for (int a = 0; a < width; a++) {
