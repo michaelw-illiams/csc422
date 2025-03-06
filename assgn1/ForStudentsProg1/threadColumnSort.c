@@ -3,20 +3,40 @@
 #include <sys/time.h>
 #include <limits.h>
 #include <pthread.h>
+#include <math.h>
 #include "columnSort.h"
 
-pthread_mutex_t lock;
-pthread_barrier_t barrier;
+int numThreads, rows, cols;
+int currentStep = 1;
+int **matrix, **shiftMatrix;
+volatile int *arrive;  // Dissemination barrier
+pthread_mutex_t stepMutex;
+pthread_cond_t stepCond;
 
-typedef struct {
-    int thread_id;
-    int numThreads;
-    int step;
-    int **matrix;
-    int **shiftMatrix;
-    int length;
-    int width;
-} ThreadData;
+// dissemination barrier bases on class psuedocode
+void barrier_wait(int id) {
+    int logP = ceil(log2(numThreads));
+    printf("Thread %d waiting at barrier during step %d\n", id, currentStep);
+    // Print the arrive array
+    // printf("id = %d, logP = %d\n", id, logP);
+    // printf("Arrive array: ");
+    // for (int i = 0; i < numThreads; i++) {
+        // printf("%d ", arrive[i]);
+    // }
+    // printf("\n");
+    int j, waitFor;
+    for (j = 1; j <= logP; j++) {
+        while (arrive[id] != 0);  // Wait for reset
+        arrive[id] = j;
+        // printf("Arrive[%d] = %d\n", id, j);
+        waitFor = (id + (int)pow(2, j-1)) % numThreads;  // Compute partner
+        // printf("waitfor at id:%d = %d\n", id, waitFor);
+        // printf("id = %d Arrive[waitfor] = %d\n", id, arrive[waitFor]);
+        while (arrive[waitFor] != j);  // Wait for partner
+        arrive[id] = 0;  // Reset
+    }
+    printf("Thread %d passed barrier during step %d\n", id, currentStep);
+}
 
 // use same comparator as driver
 int compareInts(const void *a, const void *b) {
@@ -24,42 +44,46 @@ int compareInts(const void *a, const void *b) {
 }
 
 // Sort each column in the matrix Individually
-void columnSortInd(int **matrix, int length, int width) {
+void columnSortInd(int id, int **matrix, int rows, int cols) {
+
+    // Compute the number of columns each thread should handle
+    int baseCols = cols / numThreads;
+    int extraCols = cols % numThreads;
+
+    // Calculate the start and end columns for this thread
+    int startCol, endCol;
+    if (id < extraCols) {
+        startCol = id * (baseCols + 1);
+        endCol = startCol + baseCols + 1;
+    } else {
+        startCol = id * baseCols + extraCols;
+        endCol = startCol + baseCols;
+    }
+
+    // printf("Threadid = %d, startcol = %d, endcol = %d\n", id, startCol, endCol);
+
+
     // Iterate over each column
-    int *tempArray = (int *)malloc(length * sizeof(int));
+    int *tempArray = (int *)malloc(rows * sizeof(int));
         if (!tempArray) {
             printf("Memory allocation failed for tempColumn\n");
             return;
         }
-    for (int j = 0; j < width; j++) {
+    for (int j = startCol; j < endCol; j++) {
         // Create a temporary array to store the column
-        for (int i = 0; i < length; i++) {
+        for (int i = 0; i < rows; i++) {
             tempArray[i] = matrix[i][j];
         }
         // Sort each column using qsort
-        qsort(tempArray, length, sizeof(int), compareInts);
+        qsort(tempArray, rows, sizeof(int), compareInts);
 
         // Copy the sorted values back to the matrix
-        for (int i = 0; i < length; i++) {
+        for (int i = 0; i < rows; i++) {
             matrix[i][j] = tempArray[i];
         }
     }
     free(tempArray);
 }
-
-// print function to help debug
-void printMatrix(int **matrix, int length, int width) {
-    printf("Matrix (%d x %d):\n", length, width);
-    for (int i = 0; i < length; i++) {
-        
-        for (int j = 0; j < width; j++) {
-            printf("%d ", matrix[i][j]);
-        }
-        printf("\n");
-    }
-    printf("\n");
-}
-
 // allocate matrix based on class code 
 int **allocateMatrix(int rows, int cols) {
     int i;
@@ -81,20 +105,44 @@ void freeMatrix(int **matrix) {
 }
 
 // function following McCann's column major transpose for non-square matrix
-void transpose(int **matrix, int rows, int cols, int step) {
+void transpose(int id, int **matrix, int rows, int cols, int step) {
+    
     int *tempArray = (int *)malloc(rows * cols * sizeof(int)); 
     int index = 0;
+
+    // Compute the number of columns each thread should handle
+    int baseCols = cols / numThreads;
+    int extraCols = cols % numThreads;
+
+    // Calculate the start and end columns for this thread
+    int startCol, endCol;
+    if (id < extraCols) {
+        startCol = id * (baseCols + 1);
+        endCol = startCol + baseCols + 1;
+    } else {
+        startCol = id * baseCols + extraCols;
+        endCol = startCol + baseCols;
+    }
+
+    int rowsPerCol = rows / cols;
+    int startRow = startCol * rowsPerCol;
+    int endRow = endCol * rowsPerCol;
+    printf("id:%d - startCol = %d, endcol = %d\n", id, startCol, endCol);
+    printf("id:%d - rowspercol = %d\n", id, rowsPerCol);
+    printf("id:%d - startrow = %d, endrow = %d\n", id, startRow, endRow);
+    
     // step 2 calls for columns to rows
     // flatten matrix to 1d
     if (step == 2) { 
-        for (int a = 0; a < cols; a++) {
+        for (int a = startCol; a < endCol; a++) {
             for (int b = 0; b < rows; b++) {
                 tempArray[index++] = matrix[b][a];
             }
         }
+        barrier_wait(id);
         index = 0;
         // rewrite 1d matrix back in row major
-        for (int a = 0; a < rows; a++) {
+        for (int a = startRow; a < endRow; a++) {
             for (int b = 0; b < cols; b++) {
                 matrix[a][b] = tempArray[index++];
             }
@@ -173,80 +221,121 @@ void shiftBack(int **matrix, int **newMatrix, int rows, int cols) {
     free(tempArray);
 }
 
-void *worker(void *arg) {
-    ThreadData *data = (ThreadData *)arg;
-    int tid = data->thread_id;
-    int step = data->step;
-    int chunkSize = data->length / data->numThreads;
-    int start = tid * chunkSize;
-    int end = (tid == data->numThreads - 1) ? data->length : start + chunkSize;
-
-    switch (step) {
-        case 1:
-        case 3:
-        case 5:
-        case 7:
-            // Sort columns in parallel
-            for (int j = 0; j < data->width; j++) {
-                qsort(&data->matrix[start][j], chunkSize, sizeof(int), compareInts);
-            }
-            break;
-
-        case 2:
-        case 4:
-            if (tid == 0) transpose(data->matrix, data->length, data->width, step);
-            break;
-
-        case 6:
-            if (tid == 0) shiftForward(data->matrix, data->shiftMatrix, data->length, data->width);
-            break;
-
-        case 8:
-            if (tid == 0) shiftBack(data->matrix, data->shiftMatrix, data->length, data->width);
-            break;
+// print function to help debug
+void printMatrix(int **matrix, int length, int width) {
+    printf("Step %d Matrix (%d x %d):\n", currentStep, length, width);
+    for (int i = 0; i < length; i++) {
+        
+        for (int j = 0; j < width; j++) {
+            printf("%d ", matrix[i][j]);
+        }
+        printf("\n");
     }
+    printf("\n");
+}
 
-    pthread_barrier_wait(&barrier);
+void *worker(void *arg) {
+    int id = *((int *) arg);
+    while (currentStep <= 8) {
+        printf("Thread %d Starting step %d\n", id, currentStep);
+        switch (currentStep) {
+            case 1:
+            case 3:
+            case 5:
+                printf("threadid = %d, part1\n", id);
+                columnSortInd(id, matrix, rows, cols);
+                break;
+            case 2:
+            // case 4:
+                printf("threadid = %d, part3\n", id);
+                transpose(id, matrix, rows, cols, currentStep);
+                break;
+            // case 6:
+            //     shiftForward(matrix, shiftMatrix, rows, cols);
+            //     break;
+            // case 7:
+            //     columnSortInd(id, shiftMatrix, rows, cols + 1);
+            //     break;
+            // case 8:
+            //     shiftBack(matrix, shiftMatrix, rows, cols); 
+            //     break;
+            default:
+                printf("Unknown step: %d\n", currentStep);
+                break;
+        }
+        barrier_wait(id); // Synchronize all threads
+        printMatrix(matrix, rows, cols);
+        if (id == 0) { 
+            currentStep++; 
+            printf("All threads finished step %d\n", currentStep - 1);
+        } // Move to next step only after all threads finish
+
+        if (currentStep == 4) {
+            exit(0);
+        }     
+    }
     return NULL;
 }
 
-void columnSort(int *A, int numThreads, int length, int width, double *elapsedTime) {
-    int i, step;
+void columnSort(int *A, int threads, int length, int width, double *elapsedTime) {
+    int i;
+    int *params;
+    numThreads = threads;
+    rows = length;
+    cols = width; 
     struct timeval start, stop;
-    pthread_t *threads = (pthread_t *)malloc(numThreads * sizeof(pthread_t));
-    ThreadData *threadData = (ThreadData *)malloc(numThreads * sizeof(ThreadData));
+    matrix = allocateMatrix(length, width); // make the matrix with temp vals
+    shiftMatrix = allocateMatrix(length, width+1);// Allocate new matrix with an extra column because of shift
 
-    int **matrix = allocateMatrix(length, width);
-    int **shiftMatrix = allocateMatrix(length, width + 1);
-
+    // Copy array values to matrix
     for (i = 0; i < length; i++) {
         for (int j = 0; j < width; j++) {
             matrix[i][j] = A[i * width + j];
         }
     }
-
-    pthread_mutex_init(&lock, NULL);
-    pthread_barrier_init(&barrier, NULL, numThreads);
-
-    gettimeofday(&start, NULL);
-
-    for (step = 1; step <= 8; step++) {
-        for (i = 0; i < numThreads; i++) {
-            threadData[i] = (ThreadData){i, numThreads, step, matrix, shiftMatrix, length, width};
-            pthread_create(&threads[i], NULL, worker, (void *)&threadData[i]);
-        }
-        for (i = 0; i < numThreads; i++) {
-            pthread_join(threads[i], NULL);
-        }
+    // Allocate memory for row pointers
+    arrive = (volatile int*)malloc(numThreads * sizeof(int));
+    if (!arrive) {
+        printf("Memory allocation failed for arrive\n");
+        exit(1);
+    }
+    for (int i = 0; i < numThreads; i++) {
+        arrive[i] = 0;
     }
 
-    gettimeofday(&stop, NULL);
-    *elapsedTime = ((stop.tv_sec - start.tv_sec) * 1000000 + (stop.tv_usec - start.tv_usec)) / 1000000.0;
+    pthread_mutex_init(&stepMutex, NULL);
+    pthread_cond_init(&stepCond, NULL);
+    
+    gettimeofday(&start, NULL);
 
-    freeMatrix(matrix); 
+    // Allocate thread handles
+    pthread_t *threadHandles = (pthread_t *)malloc(numThreads * sizeof(pthread_t));
+    params = (int *)malloc(numThreads * sizeof(int));
+    //create threads
+    for (i = 0; i < numThreads; i++) {
+        params[i] = i;
+        pthread_create(&threadHandles[i], NULL, worker, (void *)&params[i]);
+    }
+
+    for (i = 0; i < numThreads; i++) {
+        pthread_join(threadHandles[i], NULL);
+    }
+
+    // write final matrix back to 1d array
+    int index = 0;
+    for (int a = 0; a < width; a++) {
+        for (int b = 0; b < length; b++) {
+            A[index++] = matrix[b][a];
+        }
+    }
+    gettimeofday(&stop, NULL);
+    *elapsedTime = ((stop.tv_sec - start.tv_sec) * 1000000+(stop.tv_usec-start.tv_usec))/1000000.0;
+    free(params);
+
+    free((void *)arrive);
+    pthread_mutex_destroy(&stepMutex);
+    pthread_cond_destroy(&stepCond);
+    freeMatrix(matrix);
     freeMatrix(shiftMatrix);
-    free(threads);
-    free(threadData);
-    pthread_mutex_destroy(&lock);
-    pthread_barrier_destroy(&barrier);
+
 }
