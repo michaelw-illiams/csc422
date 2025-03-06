@@ -4,6 +4,8 @@
 #include <limits.h>
 #include "columnSort.h"
 
+int **matrix;
+int **shiftMatrix;
 
 // use same comparator as driver
 int compareInts(const void *a, const void *b) {
@@ -163,27 +165,8 @@ void shiftBack(int **matrix, int **newMatrix, int rows, int cols) {
 void columnSort(int *A, int numThreads, int length, int width, double *elapsedTime) {
     int step;
     struct timeval start, stop;
-    int **matrix = allocateMatrix(length, width); // make the matrix with temp vals
-    int **shiftMatrix = allocateMatrix(length, width+1);// Allocate new matrix with an extra column because of shift
-    
-    // used for following along with lecture slides from McCann
-    // int testMatrix[9][3] = {
-    //     {23, 15, 9}, 
-    //     {26, 11, 3},
-    //     {2, 18, 7},
-    //     {22, 5, 14}, 
-    //     {17, 20, 25},
-    //     {24, 10, 1},
-    //     {8, 13, 21}, 
-    //     {27, 12, 4},
-    //     {19, 16, 6}
-    // };
-    // // Copy values from testMatrix to matrix Testing
-    // for (int i = 0; i < length; i++) {
-    //     for (int j = 0; j < width; j++) {
-    //         matrix[i][j] = testMatrix[i][j];
-    //     }
-    // }
+    matrix = allocateMatrix(length, width); // make the matrix with temp vals
+    shiftMatrix = allocateMatrix(length, width+1);// Allocate new matrix with an extra column because of shift
 
     // Copy array values to matrix
     for (int i = 0; i < length; i++) {
@@ -198,39 +181,27 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
             case 3:
             case 5:
                 // Steps 1, 3, 5, and 7 are all the same: sort each column individually
-                printf("Step %d: Sort the Columns\n", step); //r
                 columnSortInd(matrix, length, width);
+                printMatrix(matrix, length, width);
                 break;
-
             case 2:
-                // Step 2: Transpose (Turn Columns Into Rows)
-                printf("Step 2: Transpose\n");
-                transpose(matrix, length, width, step);
-                break;
-
             case 4:
                 // Step 4: Reverse Step 2’s Transposition
-                printf("Step 4: Reverse Transposition\n");
-                transpose(matrix, length, width, step);  // Transpose again to reverse
+                // Step 2: Transpose (Turn Columns Into Rows)
+                transpose(matrix, length, width, step);
                 break;
-
             case 6:
                 // Step 6: Shift ‘Forward’ by ⌊r/2⌋ Positions
-                printf("Step 6: Shift Forward\n");
                 shiftForward(matrix, shiftMatrix, length, width);
                 break;
             
             case 7:
-                printf("Step %d: Sort the Columns\n", step);
                 columnSortInd(shiftMatrix, length, width+1);
                 break;
-
             case 8:
                 // Step 8: Shift ‘Back’ by ⌊r/2⌋ Positions
-                printf("Step 8: Shift Back\n");
                 shiftBack(matrix, shiftMatrix, length, width);
                 break;
-
             default:
                 printf("Unknown step: %d\n", step);
                 exit(0);
