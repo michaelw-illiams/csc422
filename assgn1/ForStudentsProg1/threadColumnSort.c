@@ -59,10 +59,6 @@ void columnSortInd(int id, int **matrix, int rows, int cols) {
         startCol = id * baseCols + extraCols;
         endCol = startCol + baseCols;
     }
-
-    // printf("Threadid = %d, startcol = %d, endcol = %d\n", id, startCol, endCol);
-
-
     // Iterate over each column
     int *tempArray = (int *)malloc(rows * sizeof(int));
         if (!tempArray) {
@@ -90,6 +86,9 @@ int **allocateMatrix(int rows, int cols) {
     int *vals, **temp;
     // allocate values
     vals = (int *)malloc(rows * cols * sizeof(int));
+    for (i = 0; i < rows * cols; i++) {
+        vals[i] = -1;
+    }
     // allocate vector of pointers
     temp = (int **)malloc(rows * sizeof(int *));
     for (i = 0; i < rows; i++) {
@@ -117,9 +116,7 @@ int* flatten(int **matrix, int id, int rows, int cols, int step) {
         startCol = id * baseCols + extraCols;
         endCol = startCol + baseCols;
     }
-    //printf("id:%d - startCol = %d, endcol = %d\n", id, startCol, endCol);
     int *tempArray = (int *)malloc( (rows*(endCol-startCol) )* sizeof(int)); 
-    memset(tempArray, -1, (rows*(endCol-startCol) )* sizeof(int));
     int index = 0;
     if (step == 2) { 
         for (int a = startCol; a < endCol; a++) {
@@ -127,10 +124,10 @@ int* flatten(int **matrix, int id, int rows, int cols, int step) {
                 tempArray[index++] = matrix[b][a];
             }
         }
-        for (int i = 0; i < (rows*(endCol-startCol)); i++) {  // Adjust this based on the size of tempArray
-           // printf("%d ", tempArray[i]);
-        }
-       // printf("\n");
+    //     for (int i = 0; i < (rows*(endCol-startCol)); i++) {  // Adjust this based on the size of tempArray
+    //        printf("%d ", tempArray[i]);
+    //     }
+    //    printf("\n");
     } else {
         int rowsPerCol = rows / cols;
         int startRow = startCol * rowsPerCol;
@@ -207,9 +204,6 @@ void transpose(int id, int **matrix, int rows, int cols, int step) {
     int rowsPerCol = rows / cols;
     int startRow = startCol * rowsPerCol;
     int endRow = endCol * rowsPerCol;
-   // printf("id:%d - startCol = %d, endcol = %d\n", id, startCol, endCol);
-   // printf("id:%d - rowspercol = %d\n", id, rowsPerCol);
-   // printf("id:%d - startrow = %d, endrow = %d\n", id, startRow, endRow);
     
     // step 2 calls for columns to rows
     // flatten matrix to 1d
@@ -246,9 +240,7 @@ void transpose(int id, int **matrix, int rows, int cols, int step) {
 
 // function following McCann's shift algorithm
 void shiftForward(int **newMatrix, int *tempArray, int id, int rows, int cols) {
-    assert(newMatrix != NULL);
-    assert(tempArray != NULL);
-
+    int b;
     int baseCols = cols / numThreads;
     int extraCols = cols % numThreads;
 
@@ -257,70 +249,47 @@ void shiftForward(int **newMatrix, int *tempArray, int id, int rows, int cols) {
     if (id < extraCols) {
         startCol = id * (baseCols + 1);
         endCol = startCol + baseCols + 1;
+        // printf("id %d left\n", id);
     } else {
         startCol = id * baseCols + extraCols;
         endCol = startCol + baseCols;
+        // printf("id %d right\n", id);
     }
-
+    endCol++;
+    // printf("id:%d - startCol = %d, endcol = %d\n", id, startCol, endCol);
     int index;
     // Calculate shift value as floor(rows / 2)
     int shift = rows / 2; // will be floor because int division
     // use flattened matrix + padding to make new matrix with shift
     index = 0;
     for (int a = startCol; a < endCol; a++) {
-        assert(a >= 0);
-        assert(a < cols+1); 
-        // printf("a = %d\n", a);
-        for (int b = 0; b < rows; b++) {
-            // printf("b = %d\n", b);
-            assert(newMatrix[b] != NULL);
-            
-            if (a == 0 && b < shift) {
-                newMatrix[b][a] = -1; // function only expects non negatives
-            } else if (a == cols && b >= shift) {
+        int startRow = (a == startCol) ? shift : 0;  // Start at shift for the first column, otherwise 0
+        int endRow = (a == cols) ? rows : ((a == endCol - 1) ? shift : rows); // end at shift or write through
+        for (int b = startRow; b < endRow; b++) {
+            if (a == cols && b >= shift) {
                 newMatrix[b][a] = INT_MAX;
             } else {
-                assert(index < rows*(endCol-startCol));
                 newMatrix[b][a] = tempArray[index++];
-            }
-            
+            }   
         }
     }
     free(tempArray);
 }
 
 // function following McCann's shift algorithm
-void shiftBack(int **newMatrix, int id, int rows, int cols) {
-    int baseCols = cols / numThreads;
-    int extraCols = cols % numThreads;
-
-    // Calculate the start and end columns for this thread
-    int startCol, endCol;
-    if (id < extraCols) {
-        startCol = id * (baseCols + 1);
-        endCol = startCol + baseCols + 1;
-    } else {
-        startCol = id * baseCols + extraCols;
-        endCol = startCol + baseCols;
-    }
-
-    int numRowsProcessed = rows * (endCol - startCol);
-    int index = id * numRowsProcessed; 
-   // printf("numRowsProcessed = %d\n", numRowsProcessed);
-//    printf("index = %d\n", index);
+void shiftBack(int **newMatrix, int *arr, int rows, int cols) {
+    int index;
     // Calculate shift value as floor(rows / 2)
     int shift = rows / 2; //will be floor because int division
+    index = 0;
     // flatten temp matrix ignoring padding
-   // printf("final values\n");
-    for (int a = startCol; a < endCol+1; a++) {
+    for (int a = 0; a < cols; a++) {
         for (int b = 0; b < rows; b++) {
-            if ( (a == 0 && b < shift) || (a == cols && b >= shift) ) {
+            if ( (a == 0 && b < shift) || (a == cols-1 && b >= shift) ) {
                 continue;
             }
-            finalArr[index++] = newMatrix[b][a];
-           // printf("b = %d, a = %d, newmatval = %d\n", b, a, newMatrix[b][a]);
+            arr[index++] = newMatrix[b][a];
         }
-       // printf("\n");
     }
 }
 
@@ -340,35 +309,39 @@ void printMatrix(int **matrix, int id, int length, int width) {
 void *worker(void *arg) {
     int id = *((int *) arg);
     int *tempArray;
-    while (currentStep <= 11) {
-        printf("Thread %d Starting step %d\n", id, currentStep);
+    while (currentStep <= 10) {
+        // printf("Thread %d Starting step %d\n", id, currentStep);
         switch (currentStep) {
             case 1: // step 1
             case 4: // step 3
             case 7: // step 5
                 columnSortInd(id, matrix, rows, cols);
+                // printMatrix(matrix, id, rows, cols);
                 break;
             case 2: // part 1 of step 2
             case 8: //part 1 of step 6
                 tempArray = flatten(matrix, id, rows, cols, 2);
+                // printMatrix(matrix, id, rows, cols);
                 break;
             case 3: // part 2 of step 2
                 rewrite(matrix, id, tempArray, rows, cols, 2);
+                // printMatrix(matrix, id, rows, cols);
                 break;
             case 5: // part 1 of step 4
                 tempArray = flatten(matrix, id, rows, cols, 4); 
+                // printMatrix(matrix, id, rows, cols);
                 break;
             case 6: // part 2 of step 4
                 rewrite(matrix, id, tempArray, rows, cols, 4);
+                // printMatrix(matrix, id, rows, cols);
                 break;
             case 9: // step 6
                 shiftForward(shiftMatrix, tempArray, id, rows, cols);
+                // printMatrix(shiftMatrix, id, rows, cols+1);
                 break;
             case 10: // step 7
                 columnSortInd(id, shiftMatrix, rows, cols + 1);
-                break;
-            case 11: // step 8
-                shiftBack(shiftMatrix, id, rows, cols); 
+                // printMatrix(shiftMatrix, id, rows, cols+1);
                 break;
             default:
                 printf("Unknown step: %d\n", currentStep);
@@ -377,10 +350,9 @@ void *worker(void *arg) {
         barrier_wait(id); // Synchronize all threads
         if (id == 0) { 
             currentStep++; 
-            printf("All threads finished step %d\n", currentStep - 1);
+            // printf("All threads finished step %d\n", currentStep - 1);
         } // Move to next step only after all threads finish 
         barrier_wait(id); // Synchronize all threads  
-        // printMatrix(matrix, id, rows, cols);
     }
     return NULL;
 }
@@ -428,13 +400,10 @@ void columnSort(int *A, int threads, int length, int width, double *elapsedTime)
         pthread_join(threadHandles[i], NULL);
     }
 
-    // write final matrix back to 1d array
-    for (int a = 0; a < (length*width); a++) {
-        A[a] = finalArr[a]; 
-    }
+    shiftBack(shiftMatrix, A, rows, cols+1); 
     // printf("final print [");
     // for (int a = 0; a < (length*width); a++) {
-        // printf("%d, ", finalArr[a]); 
+    //     printf("%d, ", A[a]); 
     // }
     // printf("]\n");
     gettimeofday(&stop, NULL);
