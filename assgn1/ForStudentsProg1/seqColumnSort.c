@@ -145,7 +145,7 @@ int* shiftBack(int **newMatrix, int rows, int cols) {
     // flatten temp matrix ignoring padding
     for (int a = 0; a < cols; a++) {
         for (int b = 0; b < rows; b++) {
-            if ( (a == 0 && b < shift) || (a == cols && b >= shift) ) {
+            if ( (a == 0 && b < shift) || (a == cols-1 && b >= shift) ) {
                 continue;
             }
             tempArray[index++] = newMatrix[b][a];
@@ -175,7 +175,6 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
             case 5:
                 // Steps 1, 3, 5, and 7 are all the same: sort each column individually
                 columnSortInd(matrix, length, width);
-                // printMatrix(matrix, length, width);
                 break;
             case 2:
             case 4:
@@ -183,7 +182,6 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
                 // Step 2: Transpose (Turn Columns Into Rows)
                 tempArray = flatten(matrix, length, width, step);
                 rewrite(matrix, tempArray, length, width, step);
-                // printMatrix(matrix, length, width);
                 break;
             case 6:
                 // Step 6: Shift ‘Forward’ by ⌊r/2⌋ Positions
@@ -195,14 +193,14 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
                 break;
             case 8:
                 // Step 8: Shift ‘Back’ by ⌊r/2⌋ Positions
-                tempArray = shiftBack(shiftMatrix, length, width);
+                tempArray = shiftBack(shiftMatrix, length, width+1);
                 break;
             default:
                 printf("Unknown step: %d\n", step);
                 exit(0);
                 break;
         }
-    }
+    }  
     // write final matrix back to 1d array
     for (int a = 0; a < (length*width); a++) {
         A[a] = tempArray[a]; 
