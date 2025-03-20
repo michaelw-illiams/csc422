@@ -69,26 +69,15 @@ void freeMatrix(int **matrix) {
     free(matrix);   
 }
 
-// function following McCann's column major transpose for non-square matrix
-void transpose(int **matrix, int rows, int cols, int step) {
+int* flatten(int **matrix, int rows, int cols, int step) {
     int *tempArray = (int *)malloc(rows * cols * sizeof(int)); 
     int index = 0;
-    // step 2 calls for columns to rows
-    // flatten matrix to 1d
     if (step == 2) { 
         for (int a = 0; a < cols; a++) {
             for (int b = 0; b < rows; b++) {
                 tempArray[index++] = matrix[b][a];
             }
         }
-        index = 0;
-        // rewrite 1d matrix back in row major
-        for (int a = 0; a < rows; a++) {
-            for (int b = 0; b < cols; b++) {
-                matrix[a][b] = tempArray[index++];
-            }
-        }
-    // step 4 calls for rows to columns
     } else {
         // inverted from step 2
         for (int a = 0; a < rows; a++) {
@@ -96,6 +85,21 @@ void transpose(int **matrix, int rows, int cols, int step) {
                 tempArray[index++] = matrix[a][b];
             }
         }
+    }
+    return tempArray;
+}
+
+void rewrite(int **matrix, int *tempArray, int rows, int cols, int step) {
+    int index;
+    if (step == 2) {
+        index = 0;
+        // rewrite 1d matrix back in row major
+        for (int a = 0; a < rows; a++) {
+            for (int b = 0; b < cols; b++) {
+                matrix[a][b] = tempArray[index++];
+            }
+        }
+    } else {
         index = 0;
         for (int a = 0; a < cols; a++) {
             for (int b = 0; b < rows; b++) {
@@ -111,14 +115,9 @@ void shiftForward(int **matrix, int **newMatrix, int rows, int cols) {
     int index;
     // Calculate shift value as floor(rows / 2)
     int shift = rows / 2; // will be floor because int division
-    int *tempArray = (int *)malloc(rows * cols * sizeof(int));
+    int *tempArray = flatten(matrix, rows, cols, 2); // flatten matrix using col major
     index = 0;
-    // flatten matrix
-    for (int a = 0; a < cols; a++) {
-        for (int b = 0; b < rows; b++) {
-            tempArray[index++] = matrix[b][a];
-        }
-    }
+    
     // use flattened matrix + padding to make new matrix with shift
     index = 0;
     for (int a = 0; a < cols+1; a++) {
@@ -137,7 +136,7 @@ void shiftForward(int **matrix, int **newMatrix, int rows, int cols) {
 }
 
 // function following McCann's shift algorithm
-void shiftBack(int **matrix, int **newMatrix, int rows, int cols) {
+int* shiftBack(int **newMatrix, int rows, int cols) {
     int index;
     // Calculate shift value as floor(rows / 2)
     int shift = rows / 2; //will be floor because int division
@@ -152,14 +151,7 @@ void shiftBack(int **matrix, int **newMatrix, int rows, int cols) {
             tempArray[index++] = newMatrix[b][a];
         }
     }
-    // store values in original matrix
-    index = 0;
-    for (int a = 0; a < cols; a++) {
-        for (int b = 0; b < rows; b++) {
-            matrix[b][a] = tempArray[index++];
-        }
-    }
-    free(tempArray);
+    return tempArray;
 }
 
 void columnSort(int *A, int numThreads, int length, int width, double *elapsedTime) {
@@ -175,6 +167,7 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
         }
     }
     gettimeofday(&start, NULL);
+    int *tempArray;
     for (step = 1; step <= 8; step++) {
         switch(step) {
             case 1:
@@ -182,13 +175,15 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
             case 5:
                 // Steps 1, 3, 5, and 7 are all the same: sort each column individually
                 columnSortInd(matrix, length, width);
-                printMatrix(matrix, length, width);
+                // printMatrix(matrix, length, width);
                 break;
             case 2:
             case 4:
                 // Step 4: Reverse Step 2’s Transposition
                 // Step 2: Transpose (Turn Columns Into Rows)
-                transpose(matrix, length, width, step);
+                tempArray = flatten(matrix, length, width, step);
+                rewrite(matrix, tempArray, length, width, step);
+                // printMatrix(matrix, length, width);
                 break;
             case 6:
                 // Step 6: Shift ‘Forward’ by ⌊r/2⌋ Positions
@@ -200,7 +195,7 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
                 break;
             case 8:
                 // Step 8: Shift ‘Back’ by ⌊r/2⌋ Positions
-                shiftBack(matrix, shiftMatrix, length, width);
+                tempArray = shiftBack(shiftMatrix, length, width);
                 break;
             default:
                 printf("Unknown step: %d\n", step);
@@ -208,13 +203,9 @@ void columnSort(int *A, int numThreads, int length, int width, double *elapsedTi
                 break;
         }
     }
-
     // write final matrix back to 1d array
-    int index = 0;
-    for (int a = 0; a < width; a++) {
-        for (int b = 0; b < length; b++) {
-            A[index++] = matrix[b][a];
-        }
+    for (int a = 0; a < (length*width); a++) {
+        A[a] = tempArray[a]; 
     }
     gettimeofday(&stop, NULL);
     *elapsedTime = ((stop.tv_sec - start.tv_sec) * 1000000+(stop.tv_usec-start.tv_usec))/1000000.0;
