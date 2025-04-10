@@ -7,12 +7,11 @@
 #include <pthread.h>
 #include "myMalloc-helper.h"
 
-pthread_mutex_t globalLock = PTHREAD_MUTEX_INITIALIZER;
-int globalMode = 0;
-
-// total amount of memory to allocate, and size of each small chunk
+// total amount of memory to allocate
 #define SIZE_TOTAL 276672
 #define SIZE_SMALL 64
+#define MAX_THREADS 8
+#define SIZE_OVERFLOW SIZE_TOTAL
 
 // maintain lists of free blocks and allocated blocks
 typedef struct memoryManager {
@@ -23,72 +22,155 @@ typedef struct memoryManager {
   void *startLargeMem;  // start of large block memory for pointer checks
   void *endLargeMem;
 } memManager;
-	
-memManager *mMan;
 
-// note that flag is not used here because this is only the sequential version
+// Thread-local keys and global structures
+static memManager *threadManagers[MAX_THREADS+1];     // 1 per thread
+static memManager *overflowManager;
+static pthread_mutex_t overflowLockSmall = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t overflowLockLarge = PTHREAD_MUTEX_INITIALIZER;
+
+static pthread_key_t threadKey;
+static int threadCount;
+static pthread_mutex_t idAssignLock = PTHREAD_MUTEX_INITIALIZER;
+static int globalMode = 0;
+
 int myInit(int numCores, int flag) {
   globalMode = flag;
-  int numSmall, numLarge;
-  int chunkSizeSmall = SIZE_SMALL + sizeof(chunk);
-  int chunkSizeLarge = 1024 + sizeof(chunk);
+  threadCount = 0;
+  overflowManager = NULL;
+  // Create thread-local key
+  pthread_key_create(&threadKey, NULL);
 
-  // allocate SIZE_TOTAL of memory that will be split into small chunks below
-  void *mem = malloc(SIZE_TOTAL); 
-  if (mem == NULL) { // make sure malloc succeeded
-    return -1;
-  } 
- 
-  // set up memory manager
-  mMan = (memManager *) malloc(sizeof(memManager));
-  mMan->freeSmall = createList();
-  mMan->allocSmall = createList();
-  mMan->freeLarge = createList();
-  mMan->allocLarge = createList();
+  void *overflowMem = malloc(SIZE_OVERFLOW);
+  if (!overflowMem) return -1;
 
-  void *memSmall = mem;
-  void *memLarge = (void *)((char *)mem + SIZE_TOTAL / 2);
+  overflowManager = malloc(sizeof(memManager));
+  overflowManager->freeSmall = createList();
+  overflowManager->allocSmall = createList();
+  overflowManager->freeLarge = createList();
+  overflowManager->allocLarge = createList();
 
-  // how many small chunks are there?
-  // note that we divide by the *sum* of 64 bytes (for what user gets) and our metadata.
-  // the division by 2 is because when you extend to handle large blocks, the small blocks
-  // are to take up only half of the total.
-  numSmall = (SIZE_TOTAL/2) / (SIZE_SMALL + sizeof(chunk));
-  numLarge = (SIZE_TOTAL / 2) / chunkSizeLarge;
-    
-  // set up free list chunks
-  setUpChunks(mMan->freeSmall, mem, numSmall, SIZE_SMALL);
-  setUpChunks(mMan->freeLarge, memLarge, numLarge, 1024);
+  int numSmallOverflow = (SIZE_OVERFLOW / 2) / (SIZE_SMALL + sizeof(chunk));
+  int numLargeOverflow = (SIZE_OVERFLOW / 2) / (1024 + sizeof(chunk));
+  void *overflowSmallMem = overflowMem;
+  void *overflowLargeMem = (char *)overflowMem + SIZE_OVERFLOW / 2;
 
-  mMan->startLargeMem = memLarge;
-  mMan->endLargeMem = (void *)((char *)memLarge + numLarge * chunkSizeLarge);
+  setUpChunks(overflowManager->freeSmall, overflowSmallMem, numSmallOverflow, SIZE_SMALL);
+  setUpChunks(overflowManager->freeLarge, overflowLargeMem, numLargeOverflow, 1024);
 
+  overflowManager->startLargeMem = overflowLargeMem;
+  overflowManager->endLargeMem = (char *)overflowLargeMem + numLargeOverflow * (1024 + sizeof(chunk));
+  int numToInit = (flag == 0) ? 1 : numCores+1;
+
+  for (int i = 0; i < numToInit; i++) {
+    threadManagers[i] = malloc(sizeof(memManager));
+
+    if (flag == 1) {
+        // Coarse-grained: zero-sized lists (force overflow use)
+        threadManagers[i]->freeSmall = createList();
+        threadManagers[i]->allocSmall = createList();
+        threadManagers[i]->freeLarge = createList();
+        threadManagers[i]->allocLarge = createList();
+        continue;
+    }
+
+    // Fine-grained or single-threaded: allocate per-thread pool
+    void *mem = malloc(SIZE_TOTAL);
+    if (!mem) return -1;
+    threadManagers[i]->freeSmall = createList();
+    threadManagers[i]->allocSmall = createList();
+    threadManagers[i]->freeLarge = createList();
+    threadManagers[i]->allocLarge = createList();
+
+    int numSmall = (SIZE_TOTAL / 2) / (SIZE_SMALL + sizeof(chunk));
+    int numLarge = (SIZE_TOTAL / 2) / (1024 + sizeof(chunk));
+
+    void *memSmall = mem;
+    void *memLarge = (char *)mem + SIZE_TOTAL / 2;
+
+    setUpChunks(threadManagers[i]->freeSmall, memSmall, numSmall, SIZE_SMALL);
+    setUpChunks(threadManagers[i]->freeLarge, memLarge, numLarge, 1024);
+
+    threadManagers[i]->startLargeMem = memLarge;
+    threadManagers[i]->endLargeMem = (char *)memLarge + numLarge * (1024 + sizeof(chunk));
+  }
+  
   return 0;
+}
+
+// empty list check
+static int isEmptyList(chunk *list) {
+  return (list->next == list);
+}
+
+void assignThreadManager() {
+  void *current = pthread_getspecific(threadKey);
+  if (current != NULL) return;
+  pthread_mutex_lock(&idAssignLock);
+  int id = threadCount;
+  printf("Thread assigned ID %d\n", id);
+  if (id >= MAX_THREADS) {
+      fprintf(stderr, "Error: too many threads\n");
+      exit(1);
+  }
+  memManager *mgr = threadManagers[id];
+  if (!mgr) {
+      fprintf(stderr, "threadManagers[%d] is NULL!\n", id);
+      exit(1);
+  }
+  pthread_setspecific(threadKey, mgr);
+  threadCount++;
+  // First-time touch for output file
+  char str[32];
+  snprintf(str, sizeof(str), "touch Id-%d\n", id + 1);
+  system(str);
+  pthread_mutex_unlock(&idAssignLock);
 }
 
 // myMalloc just needs to get the next chunk and return a pointer to its data
 // note the pointer arithmetic that makes sure to skip over our metadata and
 // return the user a pointer to the data
 void *myMalloc(int size) {
-
-  if (globalMode == 1) {
-    pthread_mutex_lock(&globalLock);
-  }
-
+  assignThreadManager();
+  memManager *mgr = (memManager *) pthread_getspecific(threadKey);
+  if (!mgr) {
+    fprintf(stderr, "Thread-local memory manager is NULL!\n");
+    exit(1);
+}
   // get a chunk
-  chunk *toAlloc;
-
+  chunk *toAlloc = NULL;
   if (size <= 64) {
-    toAlloc = getChunk(mMan->freeSmall, mMan->allocSmall);
+      if (!isEmptyList(mgr->freeSmall)) {
+          toAlloc = getChunk(mgr->freeSmall, mgr->allocSmall);
+      } else {
+          pthread_mutex_lock(&overflowLockSmall);
+          if (!isEmptyList(overflowManager->freeSmall)) {
+              toAlloc = getChunk(overflowManager->freeSmall, overflowManager->allocSmall);
+              static int overflowTouched = 0;
+              if (!overflowTouched) {
+                  system("touch Overflow");
+                  overflowTouched = 1;
+              }
+          }
+          pthread_mutex_unlock(&overflowLockSmall);
+      }
   } else {
-    toAlloc = getChunk(mMan->freeLarge, mMan->allocLarge);
-  }    
-  
-  if (globalMode == 1) {
-    pthread_mutex_unlock(&globalLock);
+      if (!isEmptyList(mgr->freeLarge)) {
+          toAlloc = getChunk(mgr->freeLarge, mgr->allocLarge);
+      } else {
+          pthread_mutex_lock(&overflowLockLarge);
+          if (!isEmptyList(overflowManager->freeLarge)) {
+              toAlloc = getChunk(overflowManager->freeLarge, overflowManager->allocLarge);
+              static int overflowTouched = 0;
+              if (!overflowTouched) {
+                  system("touch Overflow");
+                  overflowTouched = 1;
+              }
+          }
+          pthread_mutex_unlock(&overflowLockLarge);
+      }
   }
-
-  return ((void *) ((char *) toAlloc) + sizeof(chunk));
+  return toAlloc ? (void *)((char *)toAlloc + sizeof(chunk)) : NULL;
 }
 
 // myFree just needs to put the block back on the free list
@@ -97,19 +179,25 @@ void *myMalloc(int size) {
 void myFree(void *ptr) {
   // find the front of the chunk
   chunk *toFree = (chunk *) ((char *) ptr - sizeof(chunk));
+  assignThreadManager();
+  memManager *mgr = (memManager *) pthread_getspecific(threadKey);
 
-  if (globalMode == 1) {
-    pthread_mutex_lock(&globalLock);
-  }
-
-  if (toFree->allocSize <= 64) {
-    returnChunk(mMan->freeSmall, mMan->allocSmall, toFree);
+  // Determine if this pointer is from overflow
+  if (toFree >= (chunk *)overflowManager->startLargeMem && toFree < (chunk *)overflowManager->endLargeMem) {
+    if (toFree->allocSize <= 64) {
+        pthread_mutex_lock(&overflowLockSmall);
+        returnChunk(overflowManager->freeSmall, overflowManager->allocSmall, toFree);
+        pthread_mutex_unlock(&overflowLockSmall);
+    } else {
+        pthread_mutex_lock(&overflowLockLarge);
+        returnChunk(overflowManager->freeLarge, overflowManager->allocLarge, toFree);
+        pthread_mutex_unlock(&overflowLockLarge);
+    }
   } else {
-    returnChunk(mMan->freeLarge, mMan->allocLarge, toFree);
+    if (toFree->allocSize <= 64) {
+        returnChunk(mgr->freeSmall, mgr->allocSmall, toFree);
+    } else {
+        returnChunk(mgr->freeLarge, mgr->allocLarge, toFree);
+    }
   }
-
-  if (globalMode == 1) {
-    pthread_mutex_unlock(&globalLock);
-  }
-  
 }
