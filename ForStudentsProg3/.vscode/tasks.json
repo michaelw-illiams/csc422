@@ -1,0 +1,17 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Run mpiexec",
+        "type": "shell",
+        "command": "mpiexec --mca btl_vader_single_copy_mechanism none -np 8 python3 dht.py",
+        "group": {
+          "kind": "build",
+          "isDefault": true
+        },
+        "problemMatcher": [],
+        "detail": "Launches dht.py using 8 MPI processes"
+      }
+    ]
+  }
+  

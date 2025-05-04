@@ -10,22 +10,27 @@ from dht_globals import * #global variables
 #     exit(0)
 
 
-def commandNode():
-    comm = MPI.COMM_WORLD
-    head = 0
+def commandNode(): 
+    dummy = 0
 
-    # PUT key 999 with value 12345
-    comm.send((999, 12345), dest=head, tag=PUT)
-    comm.recv(source=head, tag=ACK)
+    keyval = [9, 100]
+    MPI.COMM_WORLD.send(keyval, dest=0, tag=PUT)
+    MPI.COMM_WORLD.recv(source=0, tag=ACK)
 
-    # GET key 999
-    comm.send(999, dest=head, tag=GET)
-    result = comm.recv(source=head, tag=RETVAL)
-    value, storage_id = result
-    print(f"{value} {storage_id}")  # Expect: 12345 1000
+    addArgs = [3, 5]
+    MPI.COMM_WORLD.send(addArgs, dest=0, tag=ADD)
+    MPI.COMM_WORLD.recv(source=0, tag=ACK)
 
-    # END program
-    comm.send(0, dest=head, tag=END)
+    removeArg = 5
+    MPI.COMM_WORLD.send(removeArg, dest=0, tag=REMOVE)
+    MPI.COMM_WORLD.recv(source=0, tag=ACK)
+
+    key = 9
+    MPI.COMM_WORLD.send(key, dest=0, tag=GET)
+    answer = MPI.COMM_WORLD.recv(source=0, tag=RETVAL)
+    print(f"val is {answer[0]}, storage id is {answer[1]}")
+
+    MPI.COMM_WORLD.send(dummy, dest=0, tag=END)
     print("command finalizing")
     exit(0)
 

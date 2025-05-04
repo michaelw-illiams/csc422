@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python: MPI Debug (8 procs)",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/dht.py",
+        "console": "integratedTerminal",
+        "env": {},
+        "args": [],
+        "cwd": "${workspaceFolder}",
+        "python": "python3",
+        "justMyCode": false,
+        "preLaunchTask": "Run mpiexec",
+        "internalConsoleOptions": "neverOpen"
+      }
+    ]
+  }
+  
