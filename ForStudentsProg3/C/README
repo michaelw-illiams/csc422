@@ -1,0 +1,17 @@
+CSc 422 Program 3 files for students --- C
+
+Included are the following files.  
+
+command.c --- Example driver file.
+
+dht.{c,h} -- skeleton code that supports only (1) END and (2) most of GET
+
+dht-helper.{c,h} -- helper code, e.g., list operations, that you will add
+
+Makefile -- do not modify
+
+PublicTestCases directory 
+  -- some of the test cases that we will be running, along with the correct output for each
+  -- copy any of these into command.c to test
+  -- none of these (besides command1.c, which is copied into command.c already) 
+     work until you implement the functionality

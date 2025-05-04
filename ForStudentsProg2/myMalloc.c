@@ -108,7 +108,7 @@ void assignThreadManager() {
   if (current != NULL) return;
   pthread_mutex_lock(&idAssignLock);
   int id = threadCount;
-  printf("Thread assigned ID %d\n", id);
+  // printf("Thread assigned ID %d\n", id);
   if (id >= MAX_THREADS) {
       fprintf(stderr, "Error: too many threads\n");
       exit(1);
@@ -131,12 +131,15 @@ void assignThreadManager() {
 // note the pointer arithmetic that makes sure to skip over our metadata and
 // return the user a pointer to the data
 void *myMalloc(int size) {
+  if (size > 1024) {
+    return NULL;
+  } 
   assignThreadManager();
   memManager *mgr = (memManager *) pthread_getspecific(threadKey);
   if (!mgr) {
     fprintf(stderr, "Thread-local memory manager is NULL!\n");
     exit(1);
-}
+  } 
   // get a chunk
   chunk *toAlloc = NULL;
   if (size <= 64) {
@@ -177,10 +180,17 @@ void *myMalloc(int size) {
 // note that this involves taking the pointer that is passed in by the user and
 // getting the pointer to the beginning of the chunk (so moving backwards chunk bytes)
 void myFree(void *ptr) {
+  if (!ptr) {
+    return;
+  }
   // find the front of the chunk
   chunk *toFree = (chunk *) ((char *) ptr - sizeof(chunk));
   assignThreadManager();
   memManager *mgr = (memManager *) pthread_getspecific(threadKey);
+  if (!mgr) {
+    fprintf(stderr, "Thread-local memory manager is NULL!\n");
+    exit(1);
+  } 
 
   // Determine if this pointer is from overflow
   if (toFree >= (chunk *)overflowManager->startLargeMem && toFree < (chunk *)overflowManager->endLargeMem) {

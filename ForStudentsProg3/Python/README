@@ -1,0 +1,15 @@
+CSc 422 Program 3 files for students --- Python 
+
+Included are the following files.  
+
+command.py --- Example driver file.
+
+dht.py -- skeleton code that supports only (1) END and (2) most of GET
+
+dht-globals.py --- constants/globals
+
+PublicTestCases directory 
+  -- some of the test cases that we will be running, along with the correct output for each
+  -- copy any of these into command.py to test
+  -- none of these (besides command1.py, which is copied into command.py already) 
+     work until you implement the functionality
