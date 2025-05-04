@@ -110,12 +110,12 @@ void assignThreadManager() {
   int id = threadCount;
   // printf("Thread assigned ID %d\n", id);
   if (id >= MAX_THREADS) {
-      fprintf(stderr, "Error: too many threads\n");
+      // fprintf(stderr, "Error: too many threads\n");
       exit(1);
   }
   memManager *mgr = threadManagers[id];
   if (!mgr) {
-      fprintf(stderr, "threadManagers[%d] is NULL!\n", id);
+      // fprintf(stderr, "threadManagers[%d] is NULL!\n", id);
       exit(1);
   }
   pthread_setspecific(threadKey, mgr);
@@ -137,7 +137,7 @@ void *myMalloc(int size) {
   assignThreadManager();
   memManager *mgr = (memManager *) pthread_getspecific(threadKey);
   if (!mgr) {
-    fprintf(stderr, "Thread-local memory manager is NULL!\n");
+    // fprintf(stderr, "Thread-local memory manager is NULL!\n");
     exit(1);
   } 
   // get a chunk
