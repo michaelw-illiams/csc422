@@ -7,14 +7,10 @@ from command import commandNode
 rank = None
 num_processes = None
 node_active = False
-node_id = None  # ID of this storage node
+node_id = None 
 parent_id = None
 child_rank = None
 kv_store = {}
-
-# -----------------------------------------------
-# Node Termination Logic
-# -----------------------------------------------
 
 def terminate_head_node():
     """shutdown all nodes."""
@@ -36,10 +32,6 @@ def shutdown():
     else:
         terminate_storage_node()
 
-# -----------------------------------------------
-# Storage Node Initialization and Updates
-# -----------------------------------------------
-
 def initialize_new_node(source):
     """Initialize a new storage node inserted into the ring."""
     global node_active, parent_id, child_rank, node_id
@@ -59,10 +51,6 @@ def respond_to_storage_id_request(source):
     _ = MPI.COMM_WORLD.recv(source=source, tag=GET_STORAGE_ID)
     response = node_id if node_active else -1
     MPI.COMM_WORLD.send(response, dest=source, tag=GET_STORAGE_ID)
-
-# -----------------------------------------------
-# Key Migration and Node Removal
-# -----------------------------------------------
 
 def migrate_keys_to_new_node(new_rank, new_id):
     """Send key-value pairs in this node's range to the new node."""
@@ -91,10 +79,6 @@ def process_node_removal(source):
     node_id = None
     parent_id = None
     child_rank = None
-
-# -----------------------------------------------
-# Distributed Ring Modifications
-# -----------------------------------------------
 
 def forward_new_node_info(new_rank, new_id):
     """Send current ring links to new node."""
@@ -141,10 +125,6 @@ def query_storage_id(remote_rank):
     MPI.COMM_WORLD.send(None, dest=remote_rank, tag=GET_STORAGE_ID)
     return MPI.COMM_WORLD.recv(source=remote_rank, tag=GET_STORAGE_ID)
 
-# -----------------------------------------------
-# Key-Value Operations
-# -----------------------------------------------
-
 def put_key_value(source):
     """Insert or route a key-value pair."""
     key, value = MPI.COMM_WORLD.recv(source=source, tag=PUT)
@@ -165,10 +145,6 @@ def get_key_value(source):
     else:
         MPI.COMM_WORLD.send(key, dest=child_rank, tag=GET)
 
-# -----------------------------------------------
-# Coordination from Head Node
-# -----------------------------------------------
-
 def forward_ack_to_client():
     if rank == 0:
         _ = MPI.COMM_WORLD.recv(source=MPI.ANY_SOURCE, tag=ACK)
@@ -178,10 +154,6 @@ def forward_retval_to_client():
     if rank == 0:
         result = MPI.COMM_WORLD.recv(source=MPI.ANY_SOURCE, tag=RETVAL)
         MPI.COMM_WORLD.send(result, dest=num_processes - 1, tag=RETVAL)
-
-# -----------------------------------------------
-# Message Handling Loop (Unchanged)
-# -----------------------------------------------
 
 def handleMessages():
     status = MPI.Status()
@@ -205,10 +177,6 @@ def handleMessages():
         else:
             print(f"[Rank {rank}] ERROR: Unexpected tag {tag}")
             sys.exit(1)
-
-# -----------------------------------------------
-# Program Entry (Unchanged)
-# -----------------------------------------------
 
 if __name__ == "__main__":
     num_processes = MPI.COMM_WORLD.Get_size()
