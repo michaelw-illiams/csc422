@@ -3,202 +3,229 @@ from mpi4py import MPI
 from dht_globals import *
 from command import commandNode
 
-data = {}
-active = False
-parentId = None
-childRank = None
-storageId = None
-numProcesses = None
+# Global state variables
 rank = None
+num_processes = None
+node_active = False
+node_id = None  # ID of this storage node
+parent_id = None
+child_rank = None
+kv_store = {}
 
-def headEnd():
-    dummy = MPI.COMM_WORLD.recv(source=numProcesses-1, tag=END)
-    for i in range(1,numProcesses-1):
-        MPI.COMM_WORLD.send(dummy, dest=i, tag=END)
+# -----------------------------------------------
+# Node Termination Logic
+# -----------------------------------------------
+
+def terminate_head_node():
+    """shutdown all nodes."""
+    signal = MPI.COMM_WORLD.recv(source=num_processes - 1, tag=END)
+    for i in range(1, num_processes - 1):
+        MPI.COMM_WORLD.send(signal, dest=i, tag=END)
     MPI.Finalize()
     sys.exit(0)
-    
-def storageEnd(): 
-    dummy = MPI.COMM_WORLD.recv(source=0, tag=END)
+
+def terminate_storage_node():
+    """Storage node shutdown."""
+    _ = MPI.COMM_WORLD.recv(source=0, tag=END)
     MPI.Finalize()
     sys.exit(0)
 
-def getKeyVal(source):
-    key = MPI.COMM_WORLD.recv(source=source, tag=GET)
-    if parentId is not None and parentId < key <= storageId:
-        value = data[key]
-        argsAdd = (value, storageId)
-        MPI.COMM_WORLD.send(argsAdd, dest=0, tag=RETVAL)
-    else:
-        MPI.COMM_WORLD.send(key, dest=childRank,tag=GET)
-
-def getStorageId(rank):
-    MPI.COMM_WORLD.send(None, dest=rank, tag=GET_STORAGE_ID)
-    return MPI.COMM_WORLD.recv(source=rank, tag=GET_STORAGE_ID)
-
-def sendInfoToNewNode(newRank, newId):
-    info = (rank, childRank, storageId, newId)
-    MPI.COMM_WORLD.send(info, dest=newRank, tag=INIT_NODE)
-
-def updateLinksForAdd(newRank, newId):
-    global childRank
-    MPI.COMM_WORLD.send(newId, dest=childRank, tag=UPDATE_PARENT)
-    childRank = newRank
-
-def sendMigratedKeys(newRank, newId):
-    toSend = {k: v for k, v in data.items() if parentId < k <= newId}
-    for k in toSend:
-        del data[k]
-    MPI.COMM_WORLD.send(toSend, dest=newRank, tag=MOVE_KEYS)
-
-def end():
+def shutdown():
     if rank == 0:
-        headEnd()
+        terminate_head_node()
     else:
-        storageEnd()
+        terminate_storage_node()
 
-def add(source):
-    addParams = MPI.COMM_WORLD.recv(source=source, tag=ADD)
-    newRank, newId = addParams
-    if active and (rank == 0 or parentId is not None):
-        if storageId < newId < getStorageId(childRank):
-            sendInfoToNewNode(newRank, newId)
-            updateLinksForAdd(newRank, newId)
-            sendMigratedKeys(newRank, newId)
+# -----------------------------------------------
+# Storage Node Initialization and Updates
+# -----------------------------------------------
+
+def initialize_new_node(source):
+    """Initialize a new storage node inserted into the ring."""
+    global node_active, parent_id, child_rank, node_id
+    parent_rank, next_child_rank, parent_storage_id, new_node_id = MPI.COMM_WORLD.recv(source=source, tag=INIT_NODE)
+    node_id = new_node_id
+    parent_id = parent_storage_id
+    child_rank = next_child_rank
+    node_active = True
+
+def update_parent_info(source):
+    """Update the parent ID during node reconfiguration."""
+    global parent_id
+    parent_id = MPI.COMM_WORLD.recv(source=source, tag=UPDATE_PARENT)
+
+def respond_to_storage_id_request(source):
+    """Reply with this node's storage ID."""
+    _ = MPI.COMM_WORLD.recv(source=source, tag=GET_STORAGE_ID)
+    response = node_id if node_active else -1
+    MPI.COMM_WORLD.send(response, dest=source, tag=GET_STORAGE_ID)
+
+# -----------------------------------------------
+# Key Migration and Node Removal
+# -----------------------------------------------
+
+def migrate_keys_to_new_node(new_rank, new_id):
+    """Send key-value pairs in this node's range to the new node."""
+    keys_to_migrate = {k: v for k, v in kv_store.items() if parent_id < k <= new_id}
+    for k in keys_to_migrate:
+        del kv_store[k]
+    MPI.COMM_WORLD.send(keys_to_migrate, dest=new_rank, tag=REDIST)
+
+def receive_keys(source):
+    """Receive redistributed keys and integrate into current store."""
+    incoming_data = MPI.COMM_WORLD.recv(source=source, tag=REDIST)
+    kv_store.update(incoming_data)
+
+def process_node_removal(source):
+    """Transfer data to parent and signal disconnection."""
+    global node_active, node_id, parent_id, child_rank
+    parent_rank = MPI.COMM_WORLD.recv(source=source, tag=REMOVE_NODE)
+    
+    for k, v in kv_store.items():
+        MPI.COMM_WORLD.send((k, v), dest=parent_rank, tag=PUT)
+    
+    kv_store.clear()
+    MPI.COMM_WORLD.send(child_rank, dest=parent_rank, tag=NEW_CHILD_RANK)
+
+    node_active = False
+    node_id = None
+    parent_id = None
+    child_rank = None
+
+# -----------------------------------------------
+# Distributed Ring Modifications
+# -----------------------------------------------
+
+def forward_new_node_info(new_rank, new_id):
+    """Send current ring links to new node."""
+    info = (rank, child_rank, node_id, new_id)
+    MPI.COMM_WORLD.send(info, dest=new_rank, tag=INIT_NODE)
+
+def patch_ring_after_add(new_rank, new_id):
+    """Update this node's child and inform old child of new parent."""
+    global child_rank
+    MPI.COMM_WORLD.send(new_id, dest=child_rank, tag=UPDATE_PARENT)
+    child_rank = new_rank
+
+def add_node(source):
+    """Handle new node joining the ring."""
+    global child_rank
+    new_rank, new_id = MPI.COMM_WORLD.recv(source=source, tag=ADD)
+
+    if node_active and (rank == 0 or parent_id is not None):
+        if node_id < new_id < query_storage_id(child_rank):
+            forward_new_node_info(new_rank, new_id)
+            patch_ring_after_add(new_rank, new_id)
+            migrate_keys_to_new_node(new_rank, new_id)
             MPI.COMM_WORLD.send(0, dest=0, tag=ACK)
         else:
-            MPI.COMM_WORLD.send(addParams, dest=childRank, tag=ADD)
+            MPI.COMM_WORLD.send((new_rank, new_id), dest=child_rank, tag=ADD)
     else:
-        MPI.COMM_WORLD.send(addParams, dest=childRank, tag=ADD)
+        MPI.COMM_WORLD.send((new_rank, new_id), dest=child_rank, tag=ADD)
 
-def remove(source):
-    global childRank
-    removeId = MPI.COMM_WORLD.recv(source=source, tag=REMOVE)
-    if active and getStorageId(childRank) == removeId:
-        MPI.COMM_WORLD.send(rank, dest=childRank, tag=REMOVE_NODE)
-        childRank = MPI.COMM_WORLD.recv(source=childRank, tag=NEW_CHILD_RANK)
-        MPI.COMM_WORLD.send(storageId, dest=childRank, tag=UPDATE_PARENT)
+def remove_node(source):
+    """Handle node removal from ring."""
+    global child_rank
+    remove_id = MPI.COMM_WORLD.recv(source=source, tag=REMOVE)
+
+    if node_active and query_storage_id(child_rank) == remove_id:
+        MPI.COMM_WORLD.send(rank, dest=child_rank, tag=REMOVE_NODE)
+        child_rank = MPI.COMM_WORLD.recv(source=child_rank, tag=NEW_CHILD_RANK)
+        MPI.COMM_WORLD.send(node_id, dest=child_rank, tag=UPDATE_PARENT)
         MPI.COMM_WORLD.send(0, dest=0, tag=ACK)
     else:
-        MPI.COMM_WORLD.send(removeId, dest=childRank, tag=REMOVE)
+        MPI.COMM_WORLD.send(remove_id, dest=child_rank, tag=REMOVE)
 
-def put(source):
-    keyval = MPI.COMM_WORLD.recv(source=source, tag=PUT)
-    key, value = keyval
-    if parentId is not None and parentId < key <= storageId:
-        data[key] = value
+def query_storage_id(remote_rank):
+    """Request and receive a node’s storage ID."""
+    MPI.COMM_WORLD.send(None, dest=remote_rank, tag=GET_STORAGE_ID)
+    return MPI.COMM_WORLD.recv(source=remote_rank, tag=GET_STORAGE_ID)
+
+# -----------------------------------------------
+# Key-Value Operations
+# -----------------------------------------------
+
+def put_key_value(source):
+    """Insert or route a key-value pair."""
+    key, value = MPI.COMM_WORLD.recv(source=source, tag=PUT)
+
+    if parent_id is not None and parent_id < key <= node_id:
+        kv_store[key] = value
         MPI.COMM_WORLD.send(0, dest=0, tag=ACK)
     else:
-        MPI.COMM_WORLD.send(keyval, dest=childRank, tag=PUT)
+        MPI.COMM_WORLD.send((key, value), dest=child_rank, tag=PUT)
 
-def get(source):
-    getKeyVal(source)
+def get_key_value(source):
+    """Retrieve or forward a key request."""
+    key = MPI.COMM_WORLD.recv(source=source, tag=GET)
 
-def ack():
+    if parent_id is not None and parent_id < key <= node_id:
+        value = kv_store.get(key, -1)
+        MPI.COMM_WORLD.send((value, node_id), dest=0, tag=RETVAL)
+    else:
+        MPI.COMM_WORLD.send(key, dest=child_rank, tag=GET)
+
+# -----------------------------------------------
+# Coordination from Head Node
+# -----------------------------------------------
+
+def forward_ack_to_client():
     if rank == 0:
-        dummy = MPI.COMM_WORLD.recv(source=MPI.ANY_SOURCE, tag=ACK)
-        MPI.COMM_WORLD.send(dummy, dest=numProcesses - 1, tag=ACK)
+        _ = MPI.COMM_WORLD.recv(source=MPI.ANY_SOURCE, tag=ACK)
+        MPI.COMM_WORLD.send(0, dest=num_processes - 1, tag=ACK)
 
-def retval():
+def forward_retval_to_client():
     if rank == 0:
-        retval = MPI.COMM_WORLD.recv(source=MPI.ANY_SOURCE, tag=RETVAL)
-        MPI.COMM_WORLD.send(retval, dest=numProcesses - 1, tag=RETVAL)
+        result = MPI.COMM_WORLD.recv(source=MPI.ANY_SOURCE, tag=RETVAL)
+        MPI.COMM_WORLD.send(result, dest=num_processes - 1, tag=RETVAL)
 
-def processStorageId(source):
-    MPI.COMM_WORLD.recv(source=source, tag=GET_STORAGE_ID)
-    response_id = storageId
-    if not active:
-        response_id = -1
-    MPI.COMM_WORLD.send(response_id, dest=source, tag=GET_STORAGE_ID)
-
-
-def initializeNode(source):
-    global storageId, parentId, childRank, active
-    parentRank, newChildRank, parentStorageId, newId = MPI.COMM_WORLD.recv(source=source, tag=INIT_NODE)
-    storageId = newId
-    parentId = parentStorageId
-    childRank = newChildRank
-    active = True
-
-def updateParentId(source):
-    global parentId
-    parentId = MPI.COMM_WORLD.recv(source=source, tag=UPDATE_PARENT)
-
-def moveKeys(source):
-    movedData = MPI.COMM_WORLD.recv(source=source, tag=MOVE_KEYS)
-    data.update(movedData)
-
-def removeNode(source):
-    global active, storageId, parentId, childRank
-    parentRank = MPI.COMM_WORLD.recv(source=source, tag=REMOVE_NODE)
-    for k, v in data.items():
-        MPI.COMM_WORLD.send([k, v], dest=0, tag=PUT)
-    data.clear()
-    MPI.COMM_WORLD.send(childRank, dest=parentRank, tag=NEW_CHILD_RANK)
-    active = False
-    storageId = None
-    parentId = None
-    childRank = None
-
+# -----------------------------------------------
+# Message Handling Loop (Unchanged)
+# -----------------------------------------------
 
 def handleMessages():
-    global parentId, storageId, childRank, active, data
-
     status = MPI.Status()
-    
     while True:
         MPI.COMM_WORLD.probe(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
         source = status.Get_source()
         tag = status.Get_tag()
-        if tag == END:
-            end()
-        elif tag == ADD:
-            add(source)
-        elif tag == REMOVE:
-            remove(source)
-        elif tag == PUT:
-            put(source)
-        elif tag == GET:
-            get(source)
-        elif tag == ACK:
-            ack()
-        elif tag == RETVAL:
-            retval()
-        elif tag == GET_STORAGE_ID:
-            processStorageId(source)
-        elif tag == INIT_NODE:
-            initializeNode(source)
-        elif tag == UPDATE_PARENT:
-            updateParentId(source)
-        elif tag == MOVE_KEYS:
-            moveKeys(source)
-        elif tag == REMOVE_NODE:
-            removeNode(source)
+
+        if tag == END: shutdown()
+        elif tag == ADD: add_node(source)
+        elif tag == REMOVE: remove_node(source)
+        elif tag == PUT: put_key_value(source)
+        elif tag == GET: get_key_value(source)
+        elif tag == ACK: forward_ack_to_client()
+        elif tag == RETVAL: forward_retval_to_client()
+        elif tag == GET_STORAGE_ID: respond_to_storage_id_request(source)
+        elif tag == INIT_NODE: initialize_new_node(source)
+        elif tag == UPDATE_PARENT: update_parent_info(source)
+        elif tag == REDIST: receive_keys(source)
+        elif tag == REMOVE_NODE: process_node_removal(source)
         else:
-            print(f"ERROR, my id is {rank}, source is {source}, tag is {tag}")
+            print(f"[Rank {rank}] ERROR: Unexpected tag {tag}")
             sys.exit(1)
 
+# -----------------------------------------------
+# Program Entry (Unchanged)
+# -----------------------------------------------
 
 if __name__ == "__main__":
-    
-    # get my rank and the total number of processes
-    numProcesses = MPI.COMM_WORLD.Get_size()
+    num_processes = MPI.COMM_WORLD.Get_size()
     rank = MPI.COMM_WORLD.Get_rank()
 
-    # set up the head node and the last storage node
     if rank == 0:
-        storageId = 0
-        childRank = numProcesses - 2
-        active = True
+        node_id = 0
+        child_rank = num_processes - 2
+        node_active = True
 
-    elif rank == numProcesses - 2:
-        storageId = MAX
-        childRank = 0
-        active = True
-        parentId = 0
+    elif rank == num_processes - 2:
+        node_id = MAX
+        parent_id = 0
+        child_rank = 0
+        node_active = True
 
-    # the command node is handled separately
-    if rank < numProcesses-1:
+    if rank < num_processes - 1:
         handleMessages()
     else:
         commandNode()
